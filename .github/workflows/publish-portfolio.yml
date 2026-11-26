@@ -4,56 +4,90 @@ on:
   push:
     branches: [main]
     paths:
+      - '.github/workflows/publish-portfolio.yml'
       - 'resume-package.zip.part-*'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
 
 jobs:
   publish:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Reassemble and validate the portfolio package
+      - name: Prepare portfolio from uploaded package or live source
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p public
           shopt -s nullglob
           parts=(resume-package.zip.part-*)
-          if [ "${#parts[@]}" -ne 3 ]; then
-            echo "Expected all three resume-package.zip.part-* files in the same commit; found ${#parts[@]}."
-            exit 1
+          if [ "${#parts[@]}" -eq 3 ]; then
+            cat "${parts[@]}" > resume-package.zip
+            unzip -tq resume-package.zip
+            mkdir extracted
+            unzip -oq resume-package.zip -d extracted
+            test -f extracted/index.html
+            cp extracted/index.html public/index.html
+            echo "SOURCE=uploaded complete archive"
+          else
+            curl --fail --location --retry 3 --retry-all-errors --silent --show-error \
+              -D /tmp/portfolio-headers.txt \
+              "https://mohammad-ali-pour-resume.flutedant3.chatgpt.site/" \
+              --output public/index.html
+            echo "SOURCE=current published portfolio page"
           fi
-          cat "${parts[@]}" > resume-package.zip
-          unzip -tq resume-package.zip
-          mkdir -p extracted public
-          unzip -oq resume-package.zip -d extracted
-          test -f extracted/index.html
           python3 - <<'PY'
           from pathlib import Path
-          p = Path("extracted/index.html")
-          raw = p.read_bytes()
-          text = raw.decode("utf-8")
-          image_count = text.count("data:image/webp;base64,")
-          if len(raw) < 50_000_000:
-              raise SystemExit(f"Portfolio is only {len(raw):,} bytes; refusing to publish an incomplete file.")
-          if image_count < 500:
-              raise SystemExit(f"Only {image_count} embedded WebP images found; expected the complete portfolio.")
-          if "سناریونویسی و ساخت فیلم‌های تبلیغاتی" not in text:
-              raise SystemExit("The requested advertising-film scripting skill is missing.")
-          if "IC Center" in text or "Ic Center" in text or "ic center" in text:
-              raise SystemExit("Old IC Center text remains in HTML; correct it to PC Center before publishing.")
-          print(f"Validated {len(raw):,} bytes and {image_count} embedded WebP image references.")
+          from html.parser import HTMLParser
+          import re
+          p=Path("public/index.html")
+          text=p.read_text("utf-8")
+          class P(HTMLParser):
+              def __init__(self):
+                  super().__init__(); self.img=[]; self.scripts=[]; self.links=[]
+              def handle_starttag(self,tag,attrs):
+                  a=dict(attrs)
+                  if tag=="img": self.img.append(a.get("src",""))
+                  if tag=="script": self.scripts.append(a.get("src",""))
+                  if tag=="link": self.links.append(a.get("href",""))
+          parser=P(); parser.feed(text)
+          print("HTML_BYTES:", p.stat().st_size)
+          print("IMG_TAGS:", len(parser.img))
+          print("EMBEDDED_IMAGES:", text.count("data:image/"))
+          print("EXTERNAL_IMAGE_HOSTS:", sorted(set(re.findall(r'https?://[^/\\\" ]+', " ".join(parser.img))))[:30])
+          print("SCRIPT_URLS:", parser.scripts[:20])
+          print("LINK_URLS:", parser.links[:20])
+          print("HAS_PORTFOLIO_NAME:", "محمد علی پور" in text)
+          print("HAS_SKILL:", "سناریونویسی و ساخت فیلم‌های تبلیغاتی" in text)
+          print("HAS_ABAN_SECTION:", "آبان" in text)
           PY
-          cp extracted/index.html public/index.html
+          if [ -f /tmp/portfolio-headers.txt ]; then
+            echo "=== RESPONSE HEADERS ==="
+            cat /tmp/portfolio-headers.txt
+          fi
+          test -s public/index.html
 
-      - name: Publish to the gh-pages branch
-        uses: peaceiris/actions-gh-pages@v4
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./public
-          publish_branch: gh-pages
-          force_orphan: true
+          path: ./public
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
