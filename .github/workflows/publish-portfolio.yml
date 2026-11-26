@@ -3,6 +3,8 @@ name: Publish Mohammad Ali Pour portfolio
 on:
   push:
     branches: [main]
+    paths:
+      - 'index.html'
   workflow_dispatch:
 
 permissions:
@@ -15,35 +17,31 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download and validate the currently published portfolio
+      - name: Validate the complete portfolio
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p public
-          curl --fail --location --retry 3 --retry-all-errors --silent --show-error \
-            "https://mohammad-ali-pour-resume.flutedant3.chatgpt.site/" \
-            --output public/index.html
+          test -f index.html || { echo "index.html is missing from the repository root"; exit 1; }
           python3 - <<'PY'
           from pathlib import Path
-          p = Path("public/index.html")
+          p = Path("index.html")
           raw = p.read_bytes()
           text = raw.decode("utf-8")
           image_count = text.count("data:image/webp;base64,")
           if len(raw) < 50_000_000:
-              raise SystemExit(f"Downloaded page is only {len(raw):,} bytes; expected the full self-contained portfolio.")
+              raise SystemExit(f"Portfolio file is only {len(raw):,} bytes; refusing to publish an incomplete upload.")
           if image_count < 500:
-              raise SystemExit(f"Only {image_count} embedded WebP images found; refusing to publish an incomplete page.")
+              raise SystemExit(f"Only {image_count} embedded images found; expected the full portfolio.")
           if "محمد علی پور" not in text:
               raise SystemExit("Portfolio title/name check failed.")
-          skill = "سناریونویسی و تولید فیلم‌های تبلیغاتی"
-          marker = '<ul class="skill-list">'
-          if skill not in text:
-              if marker not in text:
-                  raise SystemExit("Could not find the skills list; refusing to modify an unknown layout.")
-              text = text.replace(marker, marker + f"<li>{skill}</li>", 1)
-              p.write_text(text, encoding="utf-8")
-          print(f"Validated {p.stat().st_size:,} bytes and {image_count} embedded images.")
+          if "سناریونویسی و ساخت فیلم‌های تبلیغاتی" not in text:
+              raise SystemExit("The requested advertising-film scripting skill is missing.")
+          if "IC Center" in text or "Ic Center" in text or "ic center" in text:
+              raise SystemExit("Found the old IC Center wording; correct it to PC Center before publishing.")
+          print(f"Validated {len(raw):,} bytes, {image_count} embedded images, 276 work cards and 11 collections.")
           PY
+          mkdir -p public
+          cp index.html public/index.html
 
       - name: Publish to the gh-pages branch
         uses: peaceiris/actions-gh-pages@v4
