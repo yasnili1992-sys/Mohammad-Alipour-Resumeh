@@ -9,85 +9,96 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
-  group: pages
+  group: portfolio-publish
   cancel-in-progress: true
 
 jobs:
   publish:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Prepare portfolio and inspect original media paths
+      - name: Download complete portfolio page and its original images
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p public
-          shopt -s nullglob
-          parts=(resume-package.zip.part-*)
-          if [ "${#parts[@]}" -eq 3 ]; then
-            cat "${parts[@]}" > resume-package.zip
-            unzip -tq resume-package.zip
-            mkdir extracted
-            unzip -oq resume-package.zip -d extracted
-            test -f extracted/index.html
-            cp extracted/index.html public/index.html
-            echo "SOURCE=uploaded complete archive"
-          else
-            curl --fail --location --retry 3 --retry-all-errors --silent --show-error \
-              -D /tmp/portfolio-headers.txt \
-              "https://mohammad-ali-pour-resume.flutedant3.chatgpt.site/" \
-              --output public/index.html
-            echo "SOURCE=current published portfolio page"
-          fi
+          curl --fail --location --retry 3 --retry-all-errors --silent --show-error \
+            "https://mohammad-ali-pour-resume.flutedant3.chatgpt.site/" \
+            --output public/index.html
           python3 - <<'PY'
           from pathlib import Path
+          from urllib.request import Request, urlopen
+          from concurrent.futures import ThreadPoolExecutor, as_completed
           from html.parser import HTMLParser
-          import re
-          p=Path("public/index.html")
-          text=p.read_text("utf-8")
-          class P(HTMLParser):
-              def __init__(self):
-                  super().__init__(); self.img=[]; self.scripts=[]; self.links=[]
-              def handle_starttag(self,tag,attrs):
-                  a=dict(attrs)
-                  if tag=="img": self.img.append(a.get("src",""))
-                  if tag=="script": self.scripts.append(a.get("src",""))
-                  if tag=="link": self.links.append(a.get("href",""))
-          parser=P(); parser.feed(text)
-          print("HTML_BYTES:", p.stat().st_size)
-          print("IMG_TAGS:", len(parser.img))
-          print("IMAGE_SRC_SAMPLE:", parser.img[:30])
-          print("SCRIPT_URLS:", parser.scripts[:20])
-          print("LINK_URLS:", parser.links[:20])
-          print("HAS_SKILL:", "سناریونویسی و ساخت فیلم‌های تبلیغاتی" in text)
-          print("HAS_ABAN_SECTION:", "آبان" in text)
+          import re, time
+
+          base = "https://mohammad-ali-pour-resume.flutedant3.chatgpt.site/"
+          page = Path("public/index.html")
+          text = page.read_text("utf-8")
+
+          # Keep the current interactive portfolio and fetch every referenced full-size WebP asset.
+          paths = sorted(set(re.findall(r'assets/[A-Za-z0-9._/-]+\.webp', text, flags=re.I)))
+          if len(paths) < 200:
+              raise SystemExit(f"Only {len(paths)} image assets were found; refusing to publish an incomplete gallery.")
+
+          def fetch(path):
+              url = base + path
+              req = Request(url, headers={"User-Agent": "Mozilla/5.0 portfolio-static-mirror"})
+              last = None
+              for attempt in range(3):
+                  try:
+                      with urlopen(req, timeout=60) as response:
+                          data = response.read()
+                      if len(data) < 100 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+                          raise ValueError(f"Not a valid WebP asset: {path}")
+                      dest = Path("public") / path
+                      dest.parent.mkdir(parents=True, exist_ok=True)
+                      dest.write_bytes(data)
+                      return path, len(data)
+                  except Exception as e:
+                      last = e
+                      time.sleep(attempt + 1)
+              raise RuntimeError(f"Failed to download {path}: {last}")
+
+          total = 0
+          with ThreadPoolExecutor(max_workers=12) as pool:
+              futures = [pool.submit(fetch, p) for p in paths]
+              for f in as_completed(futures):
+                  path, size = f.result()
+                  total += size
+          print(f"Downloaded {len(paths)} WebP assets ({total:,} bytes).")
+
+          # Add the requested advertising-film skill without disturbing the existing design.
+          skill = "سناریونویسی و ساخت فیلم‌های تبلیغاتی"
+          if skill not in text:
+              marker = '<ul class="skill-list">'
+              if marker not in text:
+                  raise SystemExit("Could not locate the skills list; refusing to guess the insertion point.")
+              text = text.replace(marker, marker + f"<li>{skill}</li>", 1)
+
+          # Correct any text-layer occurrence; raster artwork was separately reviewed.
+          text = re.sub(r'IC\s*Center', 'PC Center', text, flags=re.I)
+          page.write_text(text, encoding="utf-8")
+
+          # Verify all referenced assets now exist locally.
+          missing = [p for p in paths if not (Path("public") / p).is_file()]
+          if missing:
+              raise SystemExit(f"Missing local assets: {missing[:5]}")
+          if skill not in text:
+              raise SystemExit("Requested skill was not added.")
+          print(f"Verified page ({page.stat().st_size:,} bytes), {len(paths)} local images, and requested skill.")
           PY
-          if [ -f /tmp/portfolio-headers.txt ]; then
-            echo "=== RESPONSE HEADERS ==="
-            cat /tmp/portfolio-headers.txt
-          fi
-          test -s public/index.html
+          printf "" > public/.nojekyll
 
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
+      - name: Publish static site to GitHub Pages branch
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          enablement: true
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: ./public
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./public
+          publish_branch: gh-pages
+          force_orphan: true
