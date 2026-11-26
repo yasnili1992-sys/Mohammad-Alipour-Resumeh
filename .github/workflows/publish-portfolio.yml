@@ -27,7 +27,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Prepare portfolio from uploaded package or live source
+      - name: Prepare portfolio and inspect original media paths
         shell: bash
         run: |
           set -euo pipefail
@@ -66,11 +66,9 @@ jobs:
           parser=P(); parser.feed(text)
           print("HTML_BYTES:", p.stat().st_size)
           print("IMG_TAGS:", len(parser.img))
-          print("EMBEDDED_IMAGES:", text.count("data:image/"))
-          print("EXTERNAL_IMAGE_HOSTS:", sorted(set(re.findall(r'https?://[^/\\\" ]+', " ".join(parser.img))))[:30])
+          print("IMAGE_SRC_SAMPLE:", parser.img[:30])
           print("SCRIPT_URLS:", parser.scripts[:20])
           print("LINK_URLS:", parser.links[:20])
-          print("HAS_PORTFOLIO_NAME:", "محمد علی پور" in text)
           print("HAS_SKILL:", "سناریونویسی و ساخت فیلم‌های تبلیغاتی" in text)
           print("HAS_ABAN_SECTION:", "آبان" in text)
           PY
@@ -82,6 +80,8 @@ jobs:
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
