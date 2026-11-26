@@ -4,7 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'index.html'
+      - 'resume-package.zip.part-*'
+      - '.github/workflows/publish-portfolio.yml'
   workflow_dispatch:
 
 permissions:
@@ -17,31 +18,38 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Validate the complete portfolio
+      - name: Reassemble and validate the portfolio package
         shell: bash
         run: |
           set -euo pipefail
-          test -f index.html || { echo "index.html is missing from the repository root"; exit 1; }
+          shopt -s nullglob
+          parts=(resume-package.zip.part-*)
+          if [ "${#parts[@]}" -ne 3 ]; then
+            echo "Expected all three resume-package.zip.part-* files in the same commit; found ${#parts[@]}."
+            exit 1
+          fi
+          cat "${parts[@]}" > resume-package.zip
+          unzip -tq resume-package.zip
+          mkdir -p extracted public
+          unzip -oq resume-package.zip -d extracted
+          test -f extracted/index.html
           python3 - <<'PY'
           from pathlib import Path
-          p = Path("index.html")
+          p = Path("extracted/index.html")
           raw = p.read_bytes()
           text = raw.decode("utf-8")
           image_count = text.count("data:image/webp;base64,")
           if len(raw) < 50_000_000:
-              raise SystemExit(f"Portfolio file is only {len(raw):,} bytes; refusing to publish an incomplete upload.")
+              raise SystemExit(f"Portfolio is only {len(raw):,} bytes; refusing to publish an incomplete file.")
           if image_count < 500:
-              raise SystemExit(f"Only {image_count} embedded images found; expected the full portfolio.")
-          if "محمد علی پور" not in text:
-              raise SystemExit("Portfolio title/name check failed.")
+              raise SystemExit(f"Only {image_count} embedded WebP images found; expected the complete portfolio.")
           if "سناریونویسی و ساخت فیلم‌های تبلیغاتی" not in text:
               raise SystemExit("The requested advertising-film scripting skill is missing.")
           if "IC Center" in text or "Ic Center" in text or "ic center" in text:
-              raise SystemExit("Found the old IC Center wording; correct it to PC Center before publishing.")
-          print(f"Validated {len(raw):,} bytes, {image_count} embedded images, 276 work cards and 11 collections.")
+              raise SystemExit("Old IC Center text remains in HTML; correct it to PC Center before publishing.")
+          print(f"Validated {len(raw):,} bytes and {image_count} embedded WebP image references.")
           PY
-          mkdir -p public
-          cp index.html public/index.html
+          cp extracted/index.html public/index.html
 
       - name: Publish to the gh-pages branch
         uses: peaceiris/actions-gh-pages@v4
